@@ -1,143 +1,178 @@
-import mne
+import os
+import glob
 import numpy as np
+import mne
 import torch
 from torch.utils.data import TensorDataset, DataLoader, random_split
 
-class EEGDatasetLoader:
-    """
-    A class to load, preprocess, and split the Upper Limb Movement EEG dataset.
-    """
-    def __init__(self, file_path, train_pct=0.7, val_pct=0.15, test_pct=0.15, random_seed=42):
+class EEG0012017DataLoader:
+    def __init__(self, data_path, cache_path, batch_size=32, split_ratios=(0.7, 0.15, 0.15)):
         """
-        Initializes the dataset loader, performs preprocessing, and extracts epochs.
-        
-        Args:
-            file_path (str): Path to the 88MB GDF dataset file.
-            train_pct (float): Percentage of data for the training set.
-            val_pct (float): Percentage of data for the validation set.
-            test_pct (float): Percentage of data for the test set.
-            random_seed (int): Seed for shuffling the train set.
+        Initializes the data loader factory for the 001-2017 dataset.
         """
-        assert abs((train_pct + val_pct + test_pct) - 1.0) < 1e-5, "Percentages must sum to 1.0"
+        self.data_path = data_path
+        self.cache_path = cache_path
+        self.batch_size = batch_size
+        self.split_ratios = split_ratios
         
-        self.file_path = file_path
-        self.train_pct = train_pct
-        self.val_pct = val_pct
-        self.test_pct = test_pct
-        self.random_seed = random_seed
-        
-        # Event codes defined in the paradigm documentation[cite: 2]
         self.event_mapping = {
-            '1536': 0,  # 0x600: elbow flexion[cite: 2]
-            '1537': 1,  # 0x601: elbow extension[cite: 2]
-            '1538': 2,  # 0x602: supination[cite: 2]
-            '1539': 3,  # 0x603: pronation[cite: 2]
-            '1540': 4,  # 0x604: hand close[cite: 2]
-            '1541': 5,  # 0x605: hand open[cite: 2]
-            '1542': 6   # 0x606: rest[cite: 2]
+            1536: 'Elbow Flexion',
+            1537: 'Elbow Extension',
+            1538: 'Supination',
+            1539: 'Pronation',
+            1540: 'Hand Open',
+            1541: 'Hand Close',
+            1542: 'Rest'
         }
         
-        self.X = None
-        self.y = None
+        # MNE preprocessing parameters
+        self.l_freq = 0.5
+        self.h_freq = 40.0
+        self.sfreq_new = 256  # [EDIT 3] Changed from 128 to 256
+        self.tmin = 0.0       # [EDIT 2] Changed from -1.0 to 0.0
+        self.tmax = 3.0       
         
-        self._load_and_preprocess()
+        os.makedirs(self.cache_path, exist_ok=True)
 
-    def _load_and_preprocess(self):
-        """
-        Internal method to handle the GDF loading and apply source-specified filters.
-        """
-        # Load GDF file[cite: 1, 2]
-        raw = mne.io.read_raw_gdf(self.file_path, preload=True)
+    def get_class_names(self):
+        return list(self.event_mapping.values())
+
+    def _get_cache_filename(self, subject):
+        return os.path.join(self.cache_path, f"preprocessed_sub_{subject}.pt")
+
+    def _process_subject_run(self, file_path):
+        """Reads a single GDF file, filters, epochs, and standardizes it."""
+        raw = mne.io.read_raw_gdf(file_path, preload=True, verbose='ERROR')
+        # Keep only the first 61 channels (drops EOG and kinematic sensors)
+        raw.pick(raw.ch_names[:61])
+        raw.apply_function(lambda x: np.nan_to_num(x, copy=False))
         
-        # The EEG was measured from 61 channels (indices 0-60); other channels are EOG, glove, and exoskeleton data[cite: 1, 2]
-        eeg_ch_names = raw.ch_names[:61] 
-        raw.pick_channels(eeg_ch_names)
+        iir_params = dict(order=4, ftype='butter', output='sos')
+        raw.filter(self.l_freq, self.h_freq, method='iir', iir_params=iir_params, phase='zero', verbose='ERROR')
         
-        # Ensure the data is sampled at 512 Hz[cite: 1, 2]
-        if raw.info['sfreq'] != 512.0:
-            raw.resample(512.0)
+        raw.notch_filter(50.0, verbose='ERROR')
+        raw.resample(self.sfreq_new, npad='auto')
         
-        # Apply an 8th order Chebyshev bandpass filter from 0.01 Hz to 200 Hz[cite: 1, 2]
-        # We use Chebyshev Type I ('cheby1') specifying the passband ripple parameter (rp).
-        iir_params = dict(order=8, ftype='cheby1', rp=0.5)
-        raw.filter(l_freq=0.01, h_freq=200.0, method='iir', iir_params=iir_params)
+        raw.set_eeg_reference(ref_channels='average', projection=False, verbose='ERROR')
         
-        # Power line interference was suppressed with a notch filter at 50 Hz[cite: 1, 2]
-        raw.notch_filter(freqs=50.0)
+        events, event_id = mne.events_from_annotations(raw, verbose='ERROR')
         
-        # Re-reference the data to a common average reference (CAR)[cite: 1]
-        raw.set_eeg_reference('average')
+        target_events = []
+        event_code_to_label_idx = {} 
         
-        # Extract events directly from the GDF annotations
-        events, event_dict_mne = mne.events_from_annotations(raw)
-        
-        # Filter for valid target movement/rest events and map them to our internal 0-6 class labels
-        valid_events = []
         for event in events:
-            event_id_mne = event[2]
-            # MNE translates string annotations to integers; we reverse-map to check against our hex-to-dec codes
-            event_desc = list(event_dict_mne.keys())[list(event_dict_mne.values()).index(event_id_mne)]
-            
-            if event_desc in self.event_mapping:
-                # Replace MNE's arbitrary ID with our continuous 0-6 class IDs
-                event[2] = self.event_mapping[event_desc]
-                valid_events.append(event)
-                
-        valid_events = np.array(valid_events)
-        
-        # Extract epochs: we extract data from 0s to 3s relative to the cue onset.
-        # At second 2, a cue was presented on the computer screen[cite: 1, 2]
-        epochs = mne.Epochs(raw, valid_events, event_id=None, tmin=0.0, tmax=3.0, 
-                            baseline=None, preload=True)
-        
-        # X shape: (trials, channels, timepoints), y shape: (trials,)
-        self.X = epochs.get_data()
-        self.y = epochs.events[:, 2] 
+            annotation_desc = list(event_id.keys())[list(event_id.values()).index(event[2])]
+            try:
+                code = int(annotation_desc)
+                if code in self.event_mapping:
+                    target_events.append(event)
+                    event_code_to_label_idx[event[2]] = list(self.event_mapping.keys()).index(code)
+            except ValueError:
+                continue 
 
-    def get_unique_classes(self):
-        """
-        Returns the unique class labels present in the loaded dataset.
-        
-        Returns:
-            numpy.ndarray: Array of unique integer labels.
-        """
-        if self.y is None:
-            raise ValueError("Dataset has not been loaded correctly.")
-        return np.unique(self.y)
+        if len(target_events) == 0:
+            return None, None
 
-    def get_dataloaders(self, batch_size):
-        """
-        Splits the dataset and returns PyTorch DataLoaders.
+        target_events = np.array(target_events)
         
-        Args:
-            batch_size (int): The batch size for the DataLoaders.
-            
-        Returns:
-            tuple: (train_loader, val_loader, test_loader)
-        """
-        if self.X is None or self.y is None:
-            raise ValueError("Dataset has not been loaded correctly.")
-            
-        # Convert to PyTorch tensors
-        tensor_X = torch.tensor(self.X, dtype=torch.float32)
-        tensor_y = torch.tensor(self.y, dtype=torch.long)
-        dataset = TensorDataset(tensor_X, tensor_y)
-        
-        # Calculate split sizes
-        total_size = len(dataset)
-        train_size = int(self.train_pct * total_size)
-        val_size = int(self.val_pct * total_size)
-        test_size = total_size - train_size - val_size
-        
-        # Split using the provided random seed for deterministic shuffling
-        generator = torch.Generator().manual_seed(self.random_seed)
-        train_dataset, val_dataset, test_dataset = random_split(
-            dataset, [train_size, val_size, test_size], generator=generator
+        epochs = mne.Epochs(
+            raw, target_events, tmin=self.tmin, tmax=self.tmax, 
+            baseline=None, preload=True, verbose='ERROR'
         )
         
-        # Create DataLoaders (only train loader is shuffled per epoch)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        if len(epochs) == 0:
+            return None, None
+        
+        data = epochs.get_data(copy=True)
+        
+        final_labels = [event_code_to_label_idx[e_code] for e_code in epochs.events[:, 2]]
+        
+        return data, np.array(final_labels)
+
+    def _load_and_preprocess_subject(self, subject):
+        """Processes all runs for a SINGLE subject and saves to cache."""
+        all_x = []
+        all_y = []
+        
+        print(f"Preprocessing data for Subject {subject}...")
+        for run in range(1, 11):
+            file_pattern = os.path.join(self.data_path, f"*_subject{subject}_run{run}*.gdf")
+            files = glob.glob(file_pattern)
+            
+            for f in files:
+                x, y = self._process_subject_run(f)
+                if x is not None:
+                    all_x.append(x)
+                    all_y.append(y)
+                    
+        if not all_x:
+            raise FileNotFoundError(f"No valid GDF files found for Subject {subject}.")
+
+        X_np = np.concatenate(all_x, axis=0)
+        Y_np = np.concatenate(all_y, axis=0)
+        
+        X_tensor = torch.tensor(X_np, dtype=torch.float32).unsqueeze(1) 
+        Y_tensor = torch.tensor(Y_np, dtype=torch.long)
+        
+        cache_file = self._get_cache_filename(subject)
+        torch.save({'X': X_tensor, 'Y': Y_tensor}, cache_file)
+        print(f"Cached Subject {subject} to {cache_file}")
+        
+        return X_tensor, Y_tensor
+
+    def get_dataloaders(self, subject):
+        """
+        Takes a specific subject ID, loads their preprocessed data (from cache if available), 
+        splits them, NORMALIZES based ONLY on train data to prevent data leakage,
+        and returns Train, Validation, and Test DataLoaders.
+        """
+        cache_file = self._get_cache_filename(subject)
+        
+        if os.path.exists(cache_file):
+            print(f"Loading Subject {subject} from cache...")
+            data = torch.load(cache_file)
+            X_tensor, Y_tensor = data['X'], data['Y']
+        else:
+            X_tensor, Y_tensor = self._load_and_preprocess_subject(subject)
+
+        total_size = len(X_tensor)
+        train_size = int(self.split_ratios[0] * total_size)
+        val_size = int(self.split_ratios[1] * total_size)
+        test_size = total_size - train_size - val_size 
+        
+        generator = torch.Generator().manual_seed(42)
+        indices = torch.randperm(total_size, generator=generator).tolist()
+        
+        train_indices = indices[:train_size]
+        val_indices = indices[train_size:train_size + val_size]
+        test_indices = indices[train_size + val_size:]
+        
+        X_train = X_tensor[train_indices]
+        Y_train = Y_tensor[train_indices]
+        
+        X_val = X_tensor[val_indices]
+        Y_val = Y_tensor[val_indices]
+        
+        X_test = X_tensor[test_indices]
+        Y_test = Y_tensor[test_indices]
+        
+        print("Normalizing data based on training set statistics...")
+        mean = X_train.mean(dim=(0, 3), keepdim=True)
+        std = X_train.std(dim=(0, 3), keepdim=True)
+        
+        X_train = (X_train - mean) / (std + 1e-8)
+        
+        if len(X_val) > 0:
+            X_val = (X_val - mean) / (std + 1e-8)
+        if len(X_test) > 0:
+            X_test = (X_test - mean) / (std + 1e-8)
+        
+        train_dataset = TensorDataset(X_train, Y_train)
+        val_dataset = TensorDataset(X_val, Y_val)
+        test_dataset = TensorDataset(X_test, Y_test)
+        
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
         
         return train_loader, val_loader, test_loader
