@@ -3,7 +3,7 @@ import glob
 import numpy as np
 import mne
 import torch
-from torch.utils.data import TensorDataset, DataLoader, random_split
+from torch.utils.data import TensorDataset, DataLoader, random_split, ConcatDataset
 
 class EEG0012017DataLoader:
     def __init__(self, data_path, cache_path, batch_size=32, split_ratios=(0.7, 0.15, 0.15)):
@@ -120,7 +120,7 @@ class EEG0012017DataLoader:
         
         return X_tensor, Y_tensor
 
-    def get_dataloaders(self, subject):
+    def get_dataloaders(self, subject, random_seed=42):
         """
         Takes a specific subject ID, loads their preprocessed data (from cache if available), 
         splits them, NORMALIZES based ONLY on train data to prevent data leakage,
@@ -140,7 +140,7 @@ class EEG0012017DataLoader:
         val_size = int(self.split_ratios[1] * total_size)
         test_size = total_size - train_size - val_size 
         
-        generator = torch.Generator().manual_seed(42)
+        generator = torch.Generator().manual_seed(random_seed)
         indices = torch.randperm(total_size, generator=generator).tolist()
         
         train_indices = indices[:train_size]
@@ -176,3 +176,40 @@ class EEG0012017DataLoader:
         test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
         
         return train_loader, val_loader, test_loader
+
+    def combined_dataloaders(self, subjects, batch_size=32, shuffle=True, random_seed=42, train=True):
+        """
+        Combine multiple DataLoaders into one DataLoader.
+
+        Samples are shuffled individually, not batches.
+
+        Args:
+            dataloaders: list of PyTorch DataLoaders
+            batch_size: batch size of the resulting DataLoader
+            shuffle: whether to shuffle samples
+            num_workers: number of DataLoader workers
+
+        Returns:
+            A single DataLoader containing all samples.
+        """
+        dataloaders = []
+        for s in subjects:
+            trainloader, valloader, _ = self.get_dataloaders(s, random_seed)
+            if train:
+                dataloaders.append(trainloader)
+            else:
+                dataloaders.append(valloader)
+
+        datasets = [loader.dataset for loader in dataloaders]
+
+        combined_dataset = ConcatDataset(datasets)
+        generator = torch.Generator().manual_seed(random_seed)
+        combined_loader = DataLoader(
+            combined_dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            generator=generator,
+            pin_memory=True
+        )
+
+        return combined_loader

@@ -31,16 +31,15 @@ class EEGModel:
         
         self.architecture_key = architecture_key
         
-        self.models_dict = {
-            'EEGNet': self._build_EEGNet(),
-            'DeepConvNet': self._build_DeepConvNet(),
-            'ShallowFBCSPNet': self._build_ShallowFBCSPNet()
-        }
-        
-        if architecture_key not in self.models_dict:
+        if architecture_key == 'EEGNet':
+            self.model = self._build_EEGNet().to(self.device)
+        elif architecture_key == 'DeepConvNet':
+            self.model = self._build_DeepConvNet().to(self.device)
+        elif architecture_key == 'ShallowFBCSPNet':
+            self.model = self._build_ShallowFBCSPNet().to(self.device)
+        else:
             raise ValueError(f"Invalid architecture! Choose from: {list(self.models_dict.keys())}")
             
-        self.model = self.models_dict[architecture_key].to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
     # ==========================================
@@ -120,6 +119,8 @@ class EEGModel:
             nn.Flatten(),
             nn.Linear(1800, self.num_classes)
         )
+    
+    
             
     # ==========================================
     # Core Functions
