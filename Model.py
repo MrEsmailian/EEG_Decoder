@@ -31,18 +31,16 @@ class EEGModel:
         
         self.architecture_key = architecture_key
         
-        if architecture_key == 'EEGNet':
-            self.model = self._build_EEGNet().to(self.device)
-        elif architecture_key == 'DeepConvNet':
+        if architecture_key == 'DeepConvNet':
             self.model = self._build_DeepConvNet().to(self.device)
         elif architecture_key == 'ShallowFBCSPNet':
             self.model = self._build_ShallowFBCSPNet().to(self.device)
-        elif architecture_key == 'EEGNeX':
-            self.model = self._build_EEGNeX().to(self.device)
         elif architecture_key == 'CTNet':
             self.model = self._build_CTNet().to(self.device)
         elif architecture_key == 'Deep4Net':
             self.model = self._build_Deep4Net().to(self.device)
+        elif architecture_key == 'EEGConformer': 
+            self.model = self._build_EEGConformer().to(self.device)
         else:
             raise ValueError(f"Invalid architecture! Choose from: {list(self.models_dict.keys())}")
             
@@ -51,31 +49,6 @@ class EEGModel:
     # ==========================================
     # Architecture Definitions
     # ==========================================
-    
-    def _build_EEGNet(self):
-        """Standard EEGNet adapted for (1, 61, 769) raw time-series input."""
-        return nn.Sequential(
-            # Block 1
-            nn.Conv2d(1, 8, (1, 64), padding='same', bias=False),
-            nn.BatchNorm2d(8),
-            nn.Conv2d(8, 16, (61, 1), groups=8, bias=False), # Spatial Filter
-            nn.BatchNorm2d(16),
-            nn.ELU(),
-            nn.AvgPool2d((1, 4)),
-            nn.Dropout(0.25),
-            
-            # Block 2
-            nn.Conv2d(16, 16, (1, 16), groups=16, padding='same', bias=False), # Depthwise
-            nn.Conv2d(16, 16, (1, 1), bias=False), # Pointwise
-            nn.BatchNorm2d(16),
-            nn.ELU(),
-            nn.AvgPool2d((1, 8)),
-            nn.Dropout(0.25),
-            
-            # Classifier
-            nn.Flatten(),
-            nn.Linear(384, self.num_classes)
-        )
 
     def _build_DeepConvNet(self):
         """DeepConvNet optimized for raw time-series feature extraction."""
@@ -124,36 +97,6 @@ class EEGModel:
             # Classifier
             nn.Flatten(),
             nn.Linear(1800, self.num_classes)
-        )
- 
-    def _build_EEGNeX(self):
-        """
-        EEGNeX: A purely convolutional architecture with dilated temporal convolutions.
-        An evolution of EEGNet that captures multi-scale temporal dependencies.
-        Adapted for (1, 61, 769) raw time-series input.
-        """
-        return nn.Sequential(
-            nn.Conv2d(1, 8, (1, 32), padding='same', bias=False),
-            nn.BatchNorm2d(8),
-            nn.Conv2d(8, 16, (1, 32), padding='same', bias=False),
-            nn.BatchNorm2d(16),
-            nn.Conv2d(16, 32, (61, 1), groups=16, bias=False), # Spatial mixing (Depth multiplier = 2)
-            nn.BatchNorm2d(32),
-            nn.ELU(),
-            nn.AvgPool2d((1, 4)),
-            nn.Dropout(0.25),
-            nn.Conv2d(32, 32, (1, 16), padding='same', dilation=(1, 2), groups=32, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ELU(),
-            nn.Conv2d(32, 32, (1, 16), padding='same', dilation=(1, 4), groups=32, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ELU(),
-            nn.AvgPool2d((1, 4)),
-            nn.Dropout(0.25),
-            
-            # --- Classifier ---
-            nn.Flatten(),
-            nn.Linear(1536, self.num_classes)
         )
     
     def _build_CTNet(self):
@@ -211,10 +154,11 @@ class EEGModel:
             nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
             nn.Dropout(0.5),
 
-            nn.Conv2d(in_channels=200, out_channels=self.num_classes, kernel_size=(1, 5), bias=True),
+            nn.Conv2d(in_channels=200, out_channels=7, kernel_size=(1, 5), bias=True),
             nn.Flatten(),
             nn.Linear(7, self.num_classes)
         )
+    
     # ==========================================
     # Core Functions
     # ==========================================

@@ -5,7 +5,7 @@ import mne
 import torch
 from torch.utils.data import TensorDataset, DataLoader, random_split, ConcatDataset
 
-class EEG0012017DataLoader:
+class EEGDataLoader:
     def __init__(self, data_path, cache_path, batch_size=32, split_ratios=(0.7, 0.15, 0.15)):
         """
         Initializes the data loader factory for the 001-2017 dataset.
