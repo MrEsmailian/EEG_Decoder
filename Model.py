@@ -37,6 +37,12 @@ class EEGModel:
             self.model = self._build_DeepConvNet().to(self.device)
         elif architecture_key == 'ShallowFBCSPNet':
             self.model = self._build_ShallowFBCSPNet().to(self.device)
+        elif architecture_key == 'EEGNeX':
+            self.model = self._build_EEGNeX().to(self.device)
+        elif architecture_key == 'CTNet':
+            self.model = self._build_CTNet().to(self.device)
+        elif architecture_key == 'Deep4Net':
+            self.model = self._build_Deep4Net().to(self.device)
         else:
             raise ValueError(f"Invalid architecture! Choose from: {list(self.models_dict.keys())}")
             
@@ -119,9 +125,96 @@ class EEGModel:
             nn.Flatten(),
             nn.Linear(1800, self.num_classes)
         )
-    
-    
+ 
+    def _build_EEGNeX(self):
+        """
+        EEGNeX: A purely convolutional architecture with dilated temporal convolutions.
+        An evolution of EEGNet that captures multi-scale temporal dependencies.
+        Adapted for (1, 61, 769) raw time-series input.
+        """
+        return nn.Sequential(
+            nn.Conv2d(1, 8, (1, 32), padding='same', bias=False),
+            nn.BatchNorm2d(8),
+            nn.Conv2d(8, 16, (1, 32), padding='same', bias=False),
+            nn.BatchNorm2d(16),
+            nn.Conv2d(16, 32, (61, 1), groups=16, bias=False), # Spatial mixing (Depth multiplier = 2)
+            nn.BatchNorm2d(32),
+            nn.ELU(),
+            nn.AvgPool2d((1, 4)),
+            nn.Dropout(0.25),
+            nn.Conv2d(32, 32, (1, 16), padding='same', dilation=(1, 2), groups=32, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ELU(),
+            nn.Conv2d(32, 32, (1, 16), padding='same', dilation=(1, 4), groups=32, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ELU(),
+            nn.AvgPool2d((1, 4)),
+            nn.Dropout(0.25),
             
+            # --- Classifier ---
+            nn.Flatten(),
+            nn.Linear(1536, self.num_classes)
+        )
+    
+    def _build_CTNet(self):
+        return nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=16, kernel_size=(1, 25), padding='same', bias=False),
+            nn.BatchNorm2d(16),
+            nn.ELU(),
+
+            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(61, 1), groups=16, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ELU(),
+
+            nn.AvgPool2d(kernel_size=(1, 4), stride=(1, 4)),
+            nn.Dropout(0.25),
+
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(1, 15), padding='same', bias=False),
+            nn.BatchNorm2d(32),
+            nn.ELU(),
+
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(1, 15), groups=32, padding='same', bias=False),
+            nn.BatchNorm2d(32),
+            nn.ELU(),
+
+            nn.AvgPool2d(kernel_size=(1, 4), stride=(1, 4)),
+            nn.Dropout(0.25),
+            nn.Flatten(),
+
+            nn.Linear(32 * 48, self.num_classes)
+        )
+    
+    def _build_Deep4Net(self):
+        return nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=25, kernel_size=(1, 10), bias=False),
+            nn.Conv2d(in_channels=25, out_channels=25, kernel_size=(61, 1), bias=False),
+            nn.BatchNorm2d(25),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
+            nn.Dropout(0.5),
+
+            nn.Conv2d(in_channels=25, out_channels=50, kernel_size=(1, 10), bias=False),
+            nn.BatchNorm2d(50),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
+            nn.Dropout(0.5),
+
+            nn.Conv2d(in_channels=50, out_channels=100, kernel_size=(1, 10), bias=False),
+            nn.BatchNorm2d(100),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
+            nn.Dropout(0.5),
+
+            nn.Conv2d(in_channels=100, out_channels=200, kernel_size=(1, 10), bias=False),
+            nn.BatchNorm2d(200),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
+            nn.Dropout(0.5),
+
+            nn.Conv2d(in_channels=200, out_channels=self.num_classes, kernel_size=(1, 5), bias=True),
+            nn.Flatten(),
+            nn.Linear(7, self.num_classes)
+        )
     # ==========================================
     # Core Functions
     # ==========================================
@@ -179,13 +272,15 @@ class EEGModel:
         accuracy = (correct_predictions / total_samples) * 100.0
         return accuracy
 
-    def save_model(self, file_path):
+    def save_model(self, file_path, verbose=True):
         torch.save(self.model.state_dict(), file_path)
-        print(f"Model saved successfully to {file_path}")
+        if verbose:
+            print(f"Model saved successfully to {file_path}")
 
-    def load_model(self, file_path):
+    def load_model(self, file_path, verbose=True):
         self.model.load_state_dict(torch.load(file_path, map_location=self.device))
-        print(f"Model loaded successfully from {file_path}")
+        if verbose:
+            print(f"Model loaded successfully from {file_path}")
 
     # ==========================================
     # Getters and Setters
