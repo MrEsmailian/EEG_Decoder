@@ -221,3 +221,5 @@ __marimo__/
 *.gdf
 *.pt
 /Models
+*.html
+Main.py

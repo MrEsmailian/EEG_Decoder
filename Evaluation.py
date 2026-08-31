@@ -1,6 +1,9 @@
 import os
 import torch
+import itertools
 import numpy as np
+import pandas as pd
+from datetime import datetime
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
@@ -138,3 +141,72 @@ class visualizer:
         plt.tight_layout()
         plt.show()
 
+class ExperimentDataSaver:
+    def __init__(self, root_path):
+        self.root = root_path
+        self.data = {}
+        os.makedirs(self.root, exist_ok=True)
+
+    def set_data(self, model, phase, stats, subjects, values):
+        models = [model] if isinstance(model, str) else model
+        phases = [phase] if isinstance(phase, str) else phase
+        stats_list = [stats] if isinstance(stats, str) else stats
+        subjects_list = [subjects] if isinstance(subjects, (int, str)) else subjects
+        
+        values_flat = np.atleast_1d(values).flatten()
+        
+        grid = list(itertools.product(models, phases, stats_list, subjects_list))
+        
+        for (m, p, s, sub), v in zip(grid, values_flat):
+            sub_str = f"#{sub}" if isinstance(sub, int) or (isinstance(sub, str) and str(sub).isdigit()) else sub
+            self.data[(m, p, s, sub_str)] = v
+
+    def save_excel(self, file_name, verbose=True):
+        file_path = os.path.join(self.root, file_name)
+        
+        if not self.data:
+            if verbose:
+                print("No data available to save.")
+            return
+
+        rows = [{'Model': k[0], 'Phase': k[1], 'Stats': k[2], 'Subjects': k[3], 'Value': v} 
+                for k, v in self.data.items()]
+        df = pd.DataFrame(rows)
+        
+        pivot_df = df.pivot_table(
+            index=['Model', 'Phase', 'Stats'], 
+            columns='Subjects', 
+            values='Value', 
+            aggfunc='first'
+        )
+        
+        def extract_num(col):
+            try:
+                return int(str(col).replace('#', ''))
+            except ValueError:
+                return float('inf')
+                
+        sorted_cols = sorted(pivot_df.columns, key=extract_num)
+        pivot_df = pivot_df[sorted_cols]
+        
+        pivot_df = pivot_df.where(pd.notnull(pivot_df), None)
+        
+        mode = 'a' if os.path.exists(file_path) else 'w'
+        
+        try:
+            with pd.ExcelWriter(
+                file_path, 
+                engine='openpyxl', 
+                mode=mode, 
+                if_sheet_exists='new' if mode == 'a' else None
+            ) as writer:
+                sheet_name = datetime.now().strftime("Run_%H-%M-%S")
+                pivot_df.to_excel(writer, sheet_name=sheet_name)
+                
+                if verbose:
+                    print(f"Data saved successfully to {file_path} (Sheet: {sheet_name})")
+        except Exception as e:
+            if verbose:
+                print(f"Failed to save Excel file: {e}")
+        
+        self.data = {}

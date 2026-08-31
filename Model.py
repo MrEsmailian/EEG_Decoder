@@ -3,6 +3,36 @@ import torch.nn as nn
 from torchsummary import summary
 
 # ==========================================
+# Fitting Policy
+# ==========================================
+
+class EarlyStopping:
+    """Stops training if validation loss doesn't improve after a given patience."""
+    def __init__(self, patience=5, min_delta=0.0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        # First epoch
+        if self.best_loss is None:
+            self.best_loss = val_loss
+            return True # Indicates this is the best model so far
+            
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+            return False
+            
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+            return True
+
+# ==========================================
 # Utility Layer
 # ==========================================
 
@@ -226,6 +256,26 @@ class EEGModel:
         if verbose:
             print(f"Model loaded successfully from {file_path}")
 
+    def fit(self, train_loader, val_loader, max_epochs=50, patience=5, save_path="best_model.pth", verbose=True):
+        """Full training loop with Early Stopping."""
+        early_stopping = EarlyStopping(patience=patience)
+        
+        for epoch in range(max_epochs):
+            train_loss, val_loss = self.train_one_epoch(train_loader, val_loader)
+            if verbose:
+                print(f"Epoch [{epoch+1}/{max_epochs}] | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            is_best = early_stopping(val_loss)
+            if is_best:
+                self.save_model(save_path, verbose=verbose)
+            if early_stopping.early_stop:
+                if verbose:
+                    print(f"Early stopping triggered at epoch {epoch+1}!")
+                break
+                
+        if verbose:
+            print("Training complete. Loading best model weights...")
+        self.load_model(save_path, verbose=verbose)
+
     # ==========================================
     # Getters and Setters
     # ==========================================
@@ -244,7 +294,7 @@ class EEGModel:
 
     def get_learning_rate(self):
         return self.learning_rate
-
+    
     # ==========================================
     # Model Summary
     # ==========================================

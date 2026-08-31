@@ -46,17 +46,13 @@ class EEGDataLoader:
         # Keep only the first 61 channels (drops EOG and kinematic sensors)
         raw.pick(raw.ch_names[:61])
         raw.apply_function(lambda x: np.nan_to_num(x, copy=False))
-        
         iir_params = dict(order=4, ftype='butter', output='sos')
         raw.filter(self.l_freq, self.h_freq, method='iir', iir_params=iir_params, phase='zero', verbose='ERROR')
-        
         raw.notch_filter(50.0, verbose='ERROR')
         raw.resample(self.sfreq_new, npad='auto')
-        
         raw.set_eeg_reference(ref_channels='average', projection=False, verbose='ERROR')
         
         events, event_id = mne.events_from_annotations(raw, verbose='ERROR')
-        
         target_events = []
         event_code_to_label_idx = {} 
         
@@ -72,9 +68,7 @@ class EEGDataLoader:
 
         if len(target_events) == 0:
             return None, None
-
         target_events = np.array(target_events)
-        
         epochs = mne.Epochs(
             raw, target_events, tmin=self.tmin, tmax=self.tmax, 
             baseline=None, preload=True, verbose='ERROR'
@@ -82,9 +76,7 @@ class EEGDataLoader:
         
         if len(epochs) == 0:
             return None, None
-        
         data = epochs.get_data(copy=True)
-        
         final_labels = [event_code_to_label_idx[e_code] for e_code in epochs.events[:, 2]]
         
         return data, np.array(final_labels)
@@ -176,6 +168,93 @@ class EEGDataLoader:
         test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
         
         return train_loader, val_loader, test_loader
+
+    def get_k_fold_dataloaders(self, subject, k=5, random_seed=42):
+        """
+        Creates K-Fold Cross-Validation DataLoaders for a specific subject.
+
+        Returns:
+            List of k tuples:
+            [(train_loader, val_loader), ...]
+        """
+        if k < 2:
+            raise ValueError("k must be at least 2.")
+
+        cache_file = self._get_cache_filename(subject)
+
+        if os.path.exists(cache_file):
+            print(f"Loading Subject {subject} from cache...")
+            data = torch.load(cache_file)
+            X_tensor, Y_tensor = data['X'], data['Y']
+        else:
+            X_tensor, Y_tensor = self._load_and_preprocess_subject(subject)
+
+        total_size = len(X_tensor)
+
+        if k > total_size:
+            raise ValueError(
+                f"k={k} cannot be greater than the number of samples ({total_size})."
+            )
+
+        generator = torch.Generator().manual_seed(random_seed)
+        indices = torch.randperm(total_size, generator=generator).tolist()
+
+        base_fold_size = total_size // k
+        remainder = total_size % k
+        fold_sizes = [
+            base_fold_size + (1 if i < remainder else 0)
+            for i in range(k)
+        ]
+
+        folds = []
+        current = 0
+
+        for fold_size in fold_sizes:
+            folds.append(indices[current:current + fold_size])
+            current += fold_size
+
+        fold_loaders = []
+
+        for fold_idx in range(k):
+            print(f"\n{'=' * 20} Fold {fold_idx + 1}/{k} {'=' * 20}")
+
+            val_indices = folds[fold_idx]
+            train_indices = []
+
+            for i in range(k):
+                if i != fold_idx:
+                    train_indices.extend(folds[i])
+
+            X_train = X_tensor[train_indices]
+            Y_train = Y_tensor[train_indices]
+            X_val = X_tensor[val_indices]
+            Y_val = Y_tensor[val_indices]
+
+            print("Normalizing using training-set statistics...")
+
+            mean = X_train.mean(dim=(0, 3), keepdim=True)
+            std = X_train.std(dim=(0, 3), keepdim=True)
+
+            X_train = (X_train - mean) / (std + 1e-8)
+            X_val = (X_val - mean) / (std + 1e-8)
+
+            train_dataset = TensorDataset(X_train, Y_train)
+            val_dataset = TensorDataset(X_val, Y_val)
+
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.batch_size,
+                shuffle=True
+            )
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=self.batch_size,
+                shuffle=False
+            )
+
+            fold_loaders.append((train_loader, val_loader))
+
+        return fold_loaders
 
     def combined_dataloaders(self, subjects, batch_size=32, shuffle=True, random_seed=42, train=True):
         """
