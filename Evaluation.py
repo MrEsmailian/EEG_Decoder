@@ -63,33 +63,46 @@ class visualizer:
         return cm
 
     @staticmethod
-    def plot_model_performance(labels, test_means, test_vars, val_means, val_vars):
-        test_std = np.sqrt(np.array(test_vars))
-        val_std = np.sqrt(np.array(val_vars))
+    def plot_model_performance(labels, means, vars, legend, plot_name="Model Performance Comparison"):
+        means = np.asarray(means, dtype=float)
+        vars = np.asarray(vars, dtype=float)
+
+        if means.ndim != 2:
+            raise ValueError("means must be a 2D list/array")
+        if vars.shape != means.shape:
+            raise ValueError("vars must have the same shape as means")
+        if len(legend) != len(means):
+            raise ValueError("legend must contain one label for each dataset")
+        if len(labels) != means.shape[1]:
+            raise ValueError("labels must have the same length as each dataset")
+
+        stds = np.sqrt(vars)
         x = np.arange(len(labels))
-        width = 0.35
+        n_datasets = len(means)
+        total_width = 0.8
+        width = total_width / n_datasets
 
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.bar(x - width / 2, test_means, width, yerr=test_std, capsize=5, label="Test")
-        ax.bar(x + width / 2, val_means, width, yerr=val_std, capsize=5, label="Validation")
+        for i in range(n_datasets):
+            offset = (i - (n_datasets - 1) / 2) * width
+            ax.bar(x + offset, means[i], width, yerr=stds[i], capsize=5, label=legend[i])
+
         ax.set_xlabel("Model")
         ax.set_ylabel("Accuracy")
-        ax.set_title("Model Performance Comparison")
+        ax.set_title(plot_name)
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=45, ha="right")
         ax.legend()
-
         ax.grid(axis="y", alpha=0.3)
-        all_values = np.concatenate([
-            np.array(test_means) - test_std,
-            np.array(test_means) + test_std,
-            np.array(val_means) - val_std,
-            np.array(val_means) + val_std
-        ])
 
-        y_min = all_values.min()
-        y_max = all_values.max()
-        margin = (y_max - y_min) * 0.15
+        lower_values = means - stds
+        upper_values = means + stds
+        y_min = lower_values.min()
+        y_max = upper_values.max()
+        data_range = y_max - y_min
+        if data_range == 0:
+            data_range = max(abs(y_max), 1.0)
+        margin = data_range * 0.15
         ax.set_ylim(y_min - margin, y_max + margin)
         plt.tight_layout()
         plt.show()
@@ -161,7 +174,7 @@ class ExperimentDataSaver:
             sub_str = f"#{sub}" if isinstance(sub, int) or (isinstance(sub, str) and str(sub).isdigit()) else sub
             self.data[(m, p, s, sub_str)] = v
 
-    def save_excel(self, file_name, verbose=True):
+    def save_excel(self, file_name, sheet_name, verbose=True):
         file_path = os.path.join(self.root, file_name)
         
         if not self.data:
@@ -200,7 +213,6 @@ class ExperimentDataSaver:
                 mode=mode, 
                 if_sheet_exists='new' if mode == 'a' else None
             ) as writer:
-                sheet_name = datetime.now().strftime("Run_%H-%M-%S")
                 pivot_df.to_excel(writer, sheet_name=sheet_name)
                 
                 if verbose:
